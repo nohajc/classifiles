@@ -1,0 +1,8 @@
+mime_info_db:
+  root: "/usr/share/mime"
+libmagic:
+  db_file: "/usr/share/file/misc/magic.mgc"
+  used_for:
+  - "application/zip"
+  - "application/x-executable"
+  - "application/x-sharedlib"
