@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::{fmt, fs};
 use std::os::unix::fs as unix_fs;
 use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 
 mod mime_info;
 use mime_info::{Mime, MimeInfoDb};
@@ -23,7 +24,7 @@ pub struct Params {
     pub output_path: PathBuf,
 }
 
-trait Contains<T> where {
+trait Contains<T> {
     fn contains_ref(&self, val: T) -> bool;
 }
 
@@ -220,6 +221,172 @@ fn link_to_output(input: &Path, output_root: &Path, file_type: &FileType) -> Res
     Ok(())
 }
 
+struct BackupProcessor {
+    params: Params
+}
+
+impl BackupProcessor {
+    fn new(params: Params) -> Self {
+        Self{params}
+    }
+
+    fn input_root(&self) -> &Path {
+        &self.params.input_path
+    }
+
+    fn output_root(&self) -> &Path {
+        &self.params.output_path
+    }
+
+    fn backup_item<F>(&self, src_path: &Path, creator: F) -> Result<(), Box<dyn Error>>
+        where F: Fn(&Path) -> std::io::Result<()> {
+
+        let src_rel_path = src_path.strip_prefix(self.input_root())?;
+        let dst_path = self.output_root().to_owned().join(src_rel_path);
+        creator(&dst_path)?;
+
+        Ok(())
+    }
+
+    fn backup_dir(&self, src_path: &Path)  -> Result<(), Box<dyn Error>> {
+        self.backup_item(src_path, |dst| {
+            // println!("read dir: {}, write to: {}", src_path.display(), dst.display());
+            println!("{} -> {}", src_path.display(), dst.display());
+            fs::create_dir_all(dst)?;
+            Ok(())
+        })
+    }
+
+    fn backup_symlink(&self, src_path: &Path)  -> Result<(), Box<dyn Error>> {
+        self.backup_item(src_path, |dst| {
+            let link_target = fs::read_link(src_path)?;
+
+            let mut dst_str = dst.as_os_str().to_owned();
+            dst_str.push(".lns");
+            let dst_file = PathBuf::from(dst_str);
+
+            // println!("read link from: {}, with target: {}, write to: {}",
+            //     src_path.display(), link_target.display(), dst_file.display());
+            println!("{} -> {}", src_path.display(), dst_file.display());
+            let link_target_bytes = link_target.as_os_str().as_bytes();
+            fs::write(dst_file, [link_target_bytes, &[b'\n']].concat())?;
+            Ok(())
+        })
+    }
+}
+
+pub fn run_backup(params: Params) -> Result<(), Box<dyn Error>> {
+    if !params.output_path.is_dir() {
+        return Err(Box::new(ClassifierError(
+            format!("{} is not a directory", params.output_path.display())
+        )));
+    }
+
+    let b_proc = BackupProcessor::new(params);
+    let walker = WalkDir::new(b_proc.input_root()).into_iter().filter_map(|e| e.ok());
+
+    for entry in walker {
+        if let Ok(entry_info) = fs::symlink_metadata(entry.path()) {
+            if entry_info.is_dir() {
+                // println!("Visiting {}", entry.path().display());
+                b_proc.backup_dir(entry.path())?;
+            } else if entry_info.file_type().is_symlink() {
+                b_proc.backup_symlink(entry.path())?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+struct RestoreProcessor {
+    params: Params
+}
+
+impl RestoreProcessor {
+    fn new(params: Params) -> Self {
+        Self{params}
+    }
+
+    fn input_root(&self) -> &Path {
+        &self.params.input_path
+    }
+
+    fn output_root(&self) -> &Path {
+        &self.params.output_path
+    }
+
+    fn restore_item<F>(&self, src_path: &Path, creator: F) -> Result<(), Box<dyn Error>>
+        where F: Fn(&Path) -> Result<(), Box<dyn Error>> {
+
+        let src_rel_path = src_path.strip_prefix(self.input_root())?;
+        let dst_path = self.output_root().to_owned().join(src_rel_path);
+        creator(&dst_path)?;
+
+        Ok(())
+    }
+
+    fn restore_dir(&self, src_path: &Path)  -> Result<(), Box<dyn Error>> {
+        self.restore_item(src_path, |dst| {
+            // println!("read dir: {}, write to: {}", src_path.display(), dst.display());
+            println!("{} -> {}", src_path.display(), dst.display());
+            fs::create_dir_all(dst)?;
+            Ok(())
+        })
+    }
+
+    fn restore_symlink(&self, src_path: &Path)  -> Result<(), Box<dyn Error>> {
+        self.restore_item(src_path, |dst| {
+            if let Some(ext) = src_path.extension() {
+                if ext == OsStr::new("lns") {
+                    let src_bytes = fs::read(src_path)?;
+                    let link_bytes = if src_bytes[src_bytes.len() - 1] == b'\n' {
+                        &src_bytes[0..src_bytes.len()-1]
+                    } else {
+                        &src_bytes[..]
+                    };
+                    let link_target = Path::new(OsStr::from_bytes(link_bytes));
+
+                    let dst_file = match dst.file_stem() {
+                        Some(file_stem) => {
+                            let parent_path = dst.parent().ok_or("could not extract parent path")?;
+                            parent_path.join(file_stem)
+                        }
+                        None => dst.to_owned()
+                    };
+                    println!("{} -> {}", src_path.display(), dst_file.display());
+                    unix_fs::symlink(link_target, dst_file)?;
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+pub fn run_restore(params: Params) -> Result<(), Box<dyn Error>> {
+    if !params.output_path.is_dir() {
+        return Err(Box::new(ClassifierError(
+            format!("{} is not a directory", params.output_path.display())
+        )));
+    }
+
+    let r_proc = RestoreProcessor::new(params);
+    let walker = WalkDir::new(r_proc.input_root()).into_iter().filter_map(|e| e.ok());
+
+    for entry in walker {
+        if let Ok(entry_info) = fs::symlink_metadata(entry.path()) {
+            if entry_info.is_dir() {
+                // println!("Visiting {}", entry.path().display());
+                r_proc.restore_dir(entry.path())?;
+            } else if entry_info.is_file() {
+                r_proc.restore_symlink(entry.path())?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn run_scan(config: Config, params: Params) -> Result<(), Box<dyn Error>> {
     let mut classifier = Classifier::new(config);
 
@@ -229,20 +396,13 @@ pub fn run_scan(config: Config, params: Params) -> Result<(), Box<dyn Error>> {
         )));
     }
 
-    let input_info = fs::metadata(&params.input_path)?;
-    if input_info.is_file() {
-        let file_type = classifier.process_file(&params.input_path);
-        link_to_output(&params.input_path, &params.output_path, &file_type)?;
-        // println!("{:?}", file_type);
-    } else {
-        let walker = WalkDir::new(&params.input_path).into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file());
+    let walker = WalkDir::new(&params.input_path).into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file());
 
-        for entry in walker {
-            let file_type = classifier.process_file(entry.path());
-            link_to_output(entry.path(), &params.output_path, &file_type)?;
-        }
+    for entry in walker {
+        let file_type = classifier.process_file(entry.path());
+        link_to_output(entry.path(), &params.output_path, &file_type)?;
     }
 
     // let mime = mime_info_db.get("application/zip");

@@ -76,6 +76,42 @@ fn main() {
                 process::exit(1);
             }
         }
+        "backup" => {
+            let input_path = PathBuf::from(args.next().unwrap_or_else(|| {
+                eprintln!("Error: missing input path argument");
+                process::exit(1)
+            }));
+
+            let output_path = PathBuf::from(args.next().unwrap_or_else(|| {
+                eprintln!("Error: missing output path argument");
+                process::exit(1)
+            }));
+
+            let params = Params{input_path, output_path};
+
+            if let Err(e) = classifiles::run_backup(params) {
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        }
+        "restore" => {
+            let input_path = PathBuf::from(args.next().unwrap_or_else(|| {
+                eprintln!("Error: missing input path argument");
+                process::exit(1)
+            }));
+
+            let output_path = PathBuf::from(args.next().unwrap_or_else(|| {
+                eprintln!("Error: missing output path argument");
+                process::exit(1)
+            }));
+
+            let params = Params{input_path, output_path};
+
+            if let Err(e) = classifiles::run_restore(params) {
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        }
         _ => eprintln!("Error: invalid verb. Valid verbs are: scan, backup, restore"),
     }
 }
