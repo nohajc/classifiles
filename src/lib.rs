@@ -11,6 +11,13 @@ use mime_info::{Mime, MimeInfoDb};
 use magic::Cookie;
 use walkdir::WalkDir;
 
+#[macro_use]
+extern crate slog;
+extern crate slog_term;
+extern crate slog_async;
+
+use slog::Logger;
+
 #[derive(Debug)]
 pub struct Config {
     pub mime_info_db_root: PathBuf,
@@ -101,7 +108,7 @@ impl Classifier {
         Classifier{config, cookie_mime_opt, cookie_ext_opt, mime_info_db}
     }
 
-    fn process_file(&mut self, input_path: &Path) -> FileType {
+    fn process_file(&mut self, input_path: &Path, log: &Logger) -> FileType {
         if let Some(mime_type) = tree_magic_mini::from_filepath(input_path) {
             let input_path_str = input_path.display();
             let mut libmagic_used = false;
@@ -109,7 +116,7 @@ impl Classifier {
             let mime_type_final = if self.config.libmagic_used_for.contains_ref(mime_type) {
                 match &self.cookie_mime_opt {
                     Some(cookie) => {
-                        println!("{}: Match {} can be further refined", input_path_str, mime_type);
+                        info!(log, "{}: Match {} can be further refined", input_path_str, mime_type);
                         match cookie.file(input_path) {
                             Ok(mime_type2) => {
                                 libmagic_used = true;
@@ -123,7 +130,7 @@ impl Classifier {
             } else {
                 mime_type.to_owned()
             };
-            println!("{}: File matches {}", input_path_str, mime_type_final);
+            info!(log, "{}: File matches {}", input_path_str, mime_type_final);
 
             if let Some(ext) = guess_extension(&mut self.mime_info_db, &mime_type_final).map(str::to_owned).or_else(|| {
                 match &self.cookie_ext_opt {
@@ -141,7 +148,7 @@ impl Classifier {
                     _ => None,
                 }
             }) {
-                println!("{}: Guessed extension: {}", input_path_str, ext);
+                info!(log, "{}: Guessed extension: {}", input_path_str, ext);
                 return FileType{mime: Some(mime_type_final), ext: Some(ext)};
             }
 
@@ -248,16 +255,16 @@ impl BackupProcessor {
         Ok(())
     }
 
-    fn backup_dir(&self, src_path: &Path)  -> Result<(), Box<dyn Error>> {
+    fn backup_dir(&self, src_path: &Path, log: &Logger)  -> Result<(), Box<dyn Error>> {
         self.backup_item(src_path, |dst| {
             // println!("read dir: {}, write to: {}", src_path.display(), dst.display());
-            println!("{} -> {}", src_path.display(), dst.display());
+            info!(log, "{} -> {}", src_path.display(), dst.display());
             fs::create_dir_all(dst)?;
             Ok(())
         })
     }
 
-    fn backup_symlink(&self, src_path: &Path)  -> Result<(), Box<dyn Error>> {
+    fn backup_symlink(&self, src_path: &Path, log: &Logger)  -> Result<(), Box<dyn Error>> {
         self.backup_item(src_path, |dst| {
             let link_target = fs::read_link(src_path)?;
 
@@ -267,7 +274,7 @@ impl BackupProcessor {
 
             // println!("read link from: {}, with target: {}, write to: {}",
             //     src_path.display(), link_target.display(), dst_file.display());
-            println!("{} -> {}", src_path.display(), dst_file.display());
+            info!(log, "{} -> {}", src_path.display(), dst_file.display());
             let link_target_bytes = link_target.as_os_str().as_bytes();
             fs::write(dst_file, [link_target_bytes, &[b'\n']].concat())?;
             Ok(())
@@ -275,7 +282,7 @@ impl BackupProcessor {
     }
 }
 
-pub fn run_backup(params: Params) -> Result<(), Box<dyn Error>> {
+pub fn run_backup(params: Params, log: &Logger) -> Result<(), Box<dyn Error>> {
     if !params.output_path.is_dir() {
         return Err(Box::new(ClassifierError(
             format!("{} is not a directory", params.output_path.display())
@@ -283,15 +290,21 @@ pub fn run_backup(params: Params) -> Result<(), Box<dyn Error>> {
     }
 
     let b_proc = BackupProcessor::new(params);
-    let walker = WalkDir::new(b_proc.input_root()).into_iter().filter_map(|e| e.ok());
+    let get_walker = || WalkDir::new(b_proc.input_root()).into_iter().filter_map(|e| e.ok());
 
-    for entry in walker {
+    let item_count = get_walker().count();
+    let walker = get_walker();
+
+    for (i, entry) in walker.enumerate() {
+        let percent = (((i + 1) as f64 / item_count as f64) * 100.0) as i32;
+        let entry_log = log.new(o!("progress" => format!("{} %", percent)));
+
         if let Ok(entry_info) = fs::symlink_metadata(entry.path()) {
             if entry_info.is_dir() {
                 // println!("Visiting {}", entry.path().display());
-                b_proc.backup_dir(entry.path())?;
+                b_proc.backup_dir(entry.path(), &entry_log)?;
             } else if entry_info.file_type().is_symlink() {
-                b_proc.backup_symlink(entry.path())?;
+                b_proc.backup_symlink(entry.path(), &entry_log)?;
             }
         }
     }
@@ -326,16 +339,16 @@ impl RestoreProcessor {
         Ok(())
     }
 
-    fn restore_dir(&self, src_path: &Path)  -> Result<(), Box<dyn Error>> {
+    fn restore_dir(&self, src_path: &Path, log: &Logger)  -> Result<(), Box<dyn Error>> {
         self.restore_item(src_path, |dst| {
             // println!("read dir: {}, write to: {}", src_path.display(), dst.display());
-            println!("{} -> {}", src_path.display(), dst.display());
+            info!(log, "{} -> {}", src_path.display(), dst.display());
             fs::create_dir_all(dst)?;
             Ok(())
         })
     }
 
-    fn restore_symlink(&self, src_path: &Path)  -> Result<(), Box<dyn Error>> {
+    fn restore_symlink(&self, src_path: &Path, log: &Logger)  -> Result<(), Box<dyn Error>> {
         self.restore_item(src_path, |dst| {
             if let Some(ext) = src_path.extension() {
                 if ext == OsStr::new("lns") {
@@ -354,7 +367,7 @@ impl RestoreProcessor {
                         }
                         None => dst.to_owned()
                     };
-                    println!("{} -> {}", src_path.display(), dst_file.display());
+                    info!(log, "{} -> {}", src_path.display(), dst_file.display());
                     unix_fs::symlink(link_target, dst_file)?;
                 }
             }
@@ -363,7 +376,7 @@ impl RestoreProcessor {
     }
 }
 
-pub fn run_restore(params: Params) -> Result<(), Box<dyn Error>> {
+pub fn run_restore(params: Params, log: &Logger) -> Result<(), Box<dyn Error>> {
     if !params.output_path.is_dir() {
         return Err(Box::new(ClassifierError(
             format!("{} is not a directory", params.output_path.display())
@@ -371,15 +384,21 @@ pub fn run_restore(params: Params) -> Result<(), Box<dyn Error>> {
     }
 
     let r_proc = RestoreProcessor::new(params);
-    let walker = WalkDir::new(r_proc.input_root()).into_iter().filter_map(|e| e.ok());
+    let get_walker = || WalkDir::new(r_proc.input_root()).into_iter().filter_map(|e| e.ok());
 
-    for entry in walker {
+    let item_count = get_walker().count();
+    let walker = get_walker();
+
+    for (i, entry) in walker.enumerate() {
+        let percent = (((i + 1) as f64 / item_count as f64) * 100.0) as i32;
+        let entry_log = log.new(o!("progress" => format!("{} %", percent)));
+
         if let Ok(entry_info) = fs::symlink_metadata(entry.path()) {
             if entry_info.is_dir() {
                 // println!("Visiting {}", entry.path().display());
-                r_proc.restore_dir(entry.path())?;
+                r_proc.restore_dir(entry.path(), &entry_log)?;
             } else if entry_info.is_file() {
-                r_proc.restore_symlink(entry.path())?;
+                r_proc.restore_symlink(entry.path(), &entry_log)?;
             }
         }
     }
@@ -387,7 +406,7 @@ pub fn run_restore(params: Params) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn run_scan(config: Config, params: Params) -> Result<(), Box<dyn Error>> {
+pub fn run_scan(config: Config, params: Params, log: &Logger) -> Result<(), Box<dyn Error>> {
     let mut classifier = Classifier::new(config);
 
     if !params.output_path.is_dir() {
@@ -396,12 +415,18 @@ pub fn run_scan(config: Config, params: Params) -> Result<(), Box<dyn Error>> {
         )));
     }
 
-    let walker = WalkDir::new(&params.input_path).into_iter()
+    let get_walker = || WalkDir::new(&params.input_path).into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file());
 
-    for entry in walker {
-        let file_type = classifier.process_file(entry.path());
+    let file_count = get_walker().count();
+    let walker = get_walker();
+
+    for (i, entry) in walker.enumerate() {
+        let percent = (((i + 1) as f64 / file_count as f64) * 100.0) as i32;
+        let entry_log = log.new(o!("progress" => format!("{} %", percent)));
+
+        let file_type = classifier.process_file(entry.path(), &entry_log);
         link_to_output(entry.path(), &params.output_path, &file_type)?;
     }
 

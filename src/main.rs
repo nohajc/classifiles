@@ -1,6 +1,13 @@
 use std::{env, error::Error, fs, path::{Path, PathBuf}, process};
 use classifiles::{Config, Params};
 
+#[macro_use]
+extern crate slog;
+extern crate slog_term;
+extern crate slog_async;
+
+use slog::Drain;
+
 mod yaml_conf {
     use serde::{Serialize, Deserialize};
 
@@ -34,6 +41,12 @@ fn main() {
     args.next();
 
     let verb = args.next().unwrap_or("".to_owned());
+
+    let decorator = slog_term::TermDecorator::new().stdout().build();
+    let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+    let async_drain = slog_async::Async::new(drain).build().fuse();
+
+    let root_log = slog::Logger::root(async_drain, o!());
 
     match verb.as_str() {
         "scan" => {
@@ -71,7 +84,7 @@ fn main() {
                 }
             };
 
-            if let Err(e) = classifiles::run_scan(config, params) {
+            if let Err(e) = classifiles::run_scan(config, params, &root_log) {
                 eprintln!("Error: {}", e);
                 process::exit(1);
             }
@@ -89,7 +102,7 @@ fn main() {
 
             let params = Params{input_path, output_path};
 
-            if let Err(e) = classifiles::run_backup(params) {
+            if let Err(e) = classifiles::run_backup(params, &root_log) {
                 eprintln!("Error: {}", e);
                 process::exit(1);
             }
@@ -107,7 +120,7 @@ fn main() {
 
             let params = Params{input_path, output_path};
 
-            if let Err(e) = classifiles::run_restore(params) {
+            if let Err(e) = classifiles::run_restore(params, &root_log) {
                 eprintln!("Error: {}", e);
                 process::exit(1);
             }
