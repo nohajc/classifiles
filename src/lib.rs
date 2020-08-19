@@ -110,13 +110,12 @@ impl Classifier {
 
     fn process_file(&mut self, input_path: &Path, log: &Logger) -> FileType {
         if let Some(mime_type) = tree_magic_mini::from_filepath(input_path) {
-            let input_path_str = input_path.display();
             let mut libmagic_used = false;
 
             let mime_type_final = if self.config.libmagic_used_for.contains_ref(mime_type) {
                 match &self.cookie_mime_opt {
                     Some(cookie) => {
-                        info!(log, "{}: Match {} can be further refined", input_path_str, mime_type);
+                        info!(log, "Match {} can be further refined", mime_type);
                         match cookie.file(input_path) {
                             Ok(mime_type2) => {
                                 libmagic_used = true;
@@ -130,7 +129,7 @@ impl Classifier {
             } else {
                 mime_type.to_owned()
             };
-            info!(log, "{}: File matches {}", input_path_str, mime_type_final);
+            info!(log, "File matches {}", mime_type_final);
 
             if let Some(ext) = guess_extension(&mut self.mime_info_db, &mime_type_final).map(str::to_owned).or_else(|| {
                 match &self.cookie_ext_opt {
@@ -148,7 +147,7 @@ impl Classifier {
                     _ => None,
                 }
             }) {
-                info!(log, "{}: Guessed extension: {}", input_path_str, ext);
+                info!(log, "Guessed extension: {}", ext);
                 return FileType{mime: Some(mime_type_final), ext: Some(ext)};
             }
 
@@ -192,15 +191,21 @@ fn append_ext_if_needed(file_name: &OsStr, ext: &Option<String>) -> PathBuf {
     PathBuf::from(file_name)
 }
 
-fn link_to_output(input: &Path, output_root: &Path, file_type: &FileType) -> Result<(), Box<dyn Error>> {
+fn link_to_output(input: &Path, input_root: &Path, output_root: &Path, file_type: &FileType) -> Result<(), Box<dyn Error>> {
     let mut output_name = input.file_name()
         .map(|s| append_ext_if_needed(s, &file_type.ext))
         .unwrap_or(random_name(&file_type.ext));
 
-    let output_link_dir = match &file_type.mime {
+    let mut output_link_dir = match &file_type.mime {
         Some(mime_str) => output_root.join(mime_str),
         None => output_root.join(OUTPUT_UNKNOWN),
     };
+    if let Ok(input_rel) = input.strip_prefix(input_root) {
+        if let Some(input_rel_dir) = input_rel.parent() {
+            output_link_dir = output_link_dir.join(input_rel_dir);
+        }
+    }
+
     fs::create_dir_all(&output_link_dir)?;
 
     while fs::symlink_metadata(output_link_dir.join(&output_name)).is_ok() {
@@ -282,6 +287,12 @@ impl BackupProcessor {
     }
 }
 
+fn get_entry_log(log: &Logger, item: &Path, i: usize, item_count: usize) -> Logger {
+    let percent = (((i + 1) as f64 / item_count as f64) * 100.0) as u32;
+    log.new(o!("progress" => format!("{} % ({}/{})", percent, i + 1, item_count)))
+        .new(o!("item" => format!("{}", item.display())))
+}
+
 pub fn run_backup(params: Params, log: &Logger) -> Result<(), Box<dyn Error>> {
     if !params.output_path.is_dir() {
         return Err(Box::new(ClassifierError(
@@ -296,8 +307,7 @@ pub fn run_backup(params: Params, log: &Logger) -> Result<(), Box<dyn Error>> {
     let walker = get_walker();
 
     for (i, entry) in walker.enumerate() {
-        let percent = (((i + 1) as f64 / item_count as f64) * 100.0) as i32;
-        let entry_log = log.new(o!("progress" => format!("{} %", percent)));
+        let entry_log = get_entry_log(log, entry.path(), i, item_count);
 
         if let Ok(entry_info) = fs::symlink_metadata(entry.path()) {
             if entry_info.is_dir() {
@@ -390,8 +400,7 @@ pub fn run_restore(params: Params, log: &Logger) -> Result<(), Box<dyn Error>> {
     let walker = get_walker();
 
     for (i, entry) in walker.enumerate() {
-        let percent = (((i + 1) as f64 / item_count as f64) * 100.0) as i32;
-        let entry_log = log.new(o!("progress" => format!("{} %", percent)));
+        let entry_log = get_entry_log(log, entry.path(), i, item_count);
 
         if let Ok(entry_info) = fs::symlink_metadata(entry.path()) {
             if entry_info.is_dir() {
@@ -423,11 +432,10 @@ pub fn run_scan(config: Config, params: Params, log: &Logger) -> Result<(), Box<
     let walker = get_walker();
 
     for (i, entry) in walker.enumerate() {
-        let percent = (((i + 1) as f64 / file_count as f64) * 100.0) as i32;
-        let entry_log = log.new(o!("progress" => format!("{} %", percent)));
+        let entry_log = get_entry_log(log, entry.path(), i, file_count);
 
         let file_type = classifier.process_file(entry.path(), &entry_log);
-        link_to_output(entry.path(), &params.output_path, &file_type)?;
+        link_to_output(entry.path(), &params.input_path, &params.output_path, &file_type)?;
     }
 
     // let mime = mime_info_db.get("application/zip");
