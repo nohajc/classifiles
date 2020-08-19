@@ -10,12 +10,12 @@ Useful when going through restored files with missing metadata.
 
 The OUTPUT\_DIR is populated with a directory tree based on guessed mime types and symbolic links to the original input files.
 
-### backup symlink view
+### backup sorted view
 ```classifiles backup INPUT_DIR OUTPUT_DIR```
 
 Used to convert unix symbolic links to regular text files containing original file paths.
 
-### restore symlink view
+### restore sorted view
 ```classifiles restore INPUT_DIR OUTPUT_DIR```
 
 Reverse of the previous operation. The backup and restore feature can be useful for storage on filesystems such as FAT32.
