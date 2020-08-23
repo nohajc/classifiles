@@ -11,12 +11,7 @@ use mime_info::{Mime, MimeInfoDb};
 use magic::Cookie;
 use walkdir::WalkDir;
 
-#[macro_use]
-extern crate slog;
-extern crate slog_term;
-extern crate slog_async;
-
-use slog::Logger;
+use slog::{Logger, o, info};
 
 #[derive(Debug)]
 pub struct Config {

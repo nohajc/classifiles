@@ -1,12 +1,7 @@
 use std::{env, error::Error, fs, path::{Path, PathBuf}, process};
 use classifiles::{Config, Params};
 
-#[macro_use]
-extern crate slog;
-extern crate slog_term;
-extern crate slog_async;
-
-use slog::Drain;
+use slog::{o, Drain};
 
 mod yaml_conf {
     use serde::{Serialize, Deserialize};
